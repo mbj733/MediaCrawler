@@ -21,7 +21,34 @@
 # -*- coding: utf-8 -*-
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+def _coerce_count(value):
+    """Coerce human-readable counts to int.
+
+    2026-10: Tieba APIs may return strings like "2.7W" / "1.2万" / "3.5K"
+    for counters instead of plain ints; pydantic int parsing then fails.
+    """
+    if value is None:
+        return 0
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        return int(value)
+    s = str(value).strip().replace(",", "").rstrip("+")
+    if not s:
+        return 0
+    mult = 1
+    for suffix, m in (("W", 10000), ("w", 10000), ("万", 10000), ("K", 1000), ("k", 1000), ("千", 1000)):
+        if s.endswith(suffix):
+            mult = m
+            s = s[: -len(suffix)]
+            break
+    try:
+        return int(float(s) * mult)
+    except (TypeError, ValueError):
+        return 0
 
 
 class TiebaNote(BaseModel):
@@ -40,6 +67,11 @@ class TiebaNote(BaseModel):
     total_replay_num: int = Field(default=0, description="Total reply count")
     total_replay_page: int = Field(default=0, description="Total reply pages")
     source_keyword: str = Field(default="", description="Source keyword")
+
+    @field_validator("total_replay_num", "total_replay_page", mode="before")
+    @classmethod
+    def _parse_counts(cls, v):
+        return _coerce_count(v)
 
 
 class TiebaComment(BaseModel):
@@ -60,6 +92,11 @@ class TiebaComment(BaseModel):
     tieba_name: str = Field(..., description="Tieba name")
     tieba_link: str = Field(..., description="Tieba link")
 
+    @field_validator("sub_comment_count", mode="before")
+    @classmethod
+    def _parse_counts(cls, v):
+        return _coerce_count(v)
+
 
 class TiebaCreator(BaseModel):
     """
@@ -69,4 +106,9 @@ class TiebaCreator(BaseModel):
     user_nickname: str = Field(default="", description="User nickname (已脱敏)")
     follows: int = Field(default=0, description="Follows count")
     fans: int = Field(default=0, description="Fans count")
+
+    @field_validator("follows", "fans", mode="before")
+    @classmethod
+    def _parse_counts(cls, v):
+        return _coerce_count(v)
     registration_duration: str = Field(default="", description="Registration duration")

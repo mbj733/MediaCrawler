@@ -32,6 +32,14 @@ from base.base_crawler import AbstractLogin
 from tools import utils
 
 
+# 2026-10: Tieba 首页改版后登录入口 `li.u_login` 已不存在；
+# 该通行证地址直接渲染二维码登录页（选择器 `img.tang-pass-qrcode-img`），登录后回跳贴吧。
+BAIDU_PASSPORT_TIEBA_LOGIN_URL = (
+    "https://passport.baidu.com/v2/?login&tpl=tb"
+    "&u=https%3A%2F%2Ftieba.baidu.com%2F"
+)
+
+
 class BaiduTieBaLogin(AbstractLogin):
 
     def __init__(self,
@@ -83,24 +91,61 @@ class BaiduTieBaLogin(AbstractLogin):
         """login baidutieba website and keep webdriver login state"""
         utils.logger.info("[BaiduTieBaLogin.login_by_qrcode] Begin login baidutieba by qrcode ...")
         qrcode_img_selector = "xpath=//img[@class='tang-pass-qrcode-img']"
-        # find login qrcode
+
+        # 1) Use the qrcode already on the current page, if any (some layouts auto-pop the login dialog).
         base64_qrcode_img = await utils.find_login_qrcode(
             self.context_page,
             selector=qrcode_img_selector
         )
+
         if not base64_qrcode_img:
-            utils.logger.info("[BaiduTieBaLogin.login_by_qrcode] login failed , have not found qrcode please check ....")
-            # if this website does not automatically popup login dialog box, we will manual click login button
-            await asyncio.sleep(0.5)
-            login_button_ele = self.context_page.locator("xpath=//li[@class='u_login']")
-            await login_button_ele.click()
+            # 2) 2026-10: Tieba 首页改版后已没有 `li.u_login`，靠点击登录按钮到不了二维码弹窗。
+            #    直接打开百度通行证登录页（tpl=tb）：该页会渲染 `img.tang-pass-qrcode-img`，
+            #    扫码成功后会回跳贴吧并种下 STOKEN/PTOKEN。
+            utils.logger.info(
+                "[BaiduTieBaLogin.login_by_qrcode] No qrcode on current page; "
+                "opening Baidu passport login page directly ..."
+            )
+            try:
+                await self.context_page.goto(
+                    BAIDU_PASSPORT_TIEBA_LOGIN_URL,
+                    wait_until="domcontentloaded",
+                    timeout=60000,
+                )
+                await asyncio.sleep(1)
+            except Exception as e:
+                utils.logger.warning(
+                    f"[BaiduTieBaLogin.login_by_qrcode] goto passport login page failed: {e}"
+                )
             base64_qrcode_img = await utils.find_login_qrcode(
                 self.context_page,
                 selector=qrcode_img_selector
             )
-            if not base64_qrcode_img:
-                utils.logger.info("[BaiduTieBaLogin.login_by_qrcode] login failed , have not found qrcode please check ....")
-                sys.exit()
+
+        if not base64_qrcode_img:
+            # 3) Fallback: legacy homepage login entry (kept for older layouts).
+            for legacy_selector in (
+                "xpath=//li[@class='u_login']",
+                "xpath=//*[contains(@class,'u_login')]",
+            ):
+                try:
+                    login_button_ele = self.context_page.locator(legacy_selector).first
+                    if await login_button_ele.count() == 0:
+                        continue
+                    await login_button_ele.click()
+                    await asyncio.sleep(1)
+                    base64_qrcode_img = await utils.find_login_qrcode(
+                        self.context_page,
+                        selector=qrcode_img_selector
+                    )
+                    if base64_qrcode_img:
+                        break
+                except Exception:
+                    continue
+
+        if not base64_qrcode_img:
+            utils.logger.info("[BaiduTieBaLogin.login_by_qrcode] login failed , have not found qrcode please check ....")
+            sys.exit()
 
         # show login qrcode
         # fix issue #12
